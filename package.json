@@ -1,0 +1,13 @@
+{
+  "name": "cert-inspector",
+  "version": "1.0.0",
+  "description": "Inspect SSL certificates and DNS for all domains in a webpage request tree",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "playwright": "^1.40.0"
+  }
+}
