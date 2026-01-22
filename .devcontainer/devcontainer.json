@@ -1,7 +1,7 @@
 {
   "name": "Certificate Inspector",
-  "image": "mcr.microsoft.com/playwright:v1.40.0-jammy",
-  "postCreateCommand": "npm install",
+  "image": "mcr.microsoft.com/playwright:v1.52.0-jammy",
+  "postCreateCommand": "npm ci",
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
