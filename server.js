@@ -5,7 +5,47 @@ const tls = require('tls');
 const https = require('https');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+function isValidUrl(urlString) {
+  try {
+    const url = new URL(urlString);
+    // Only allow http and https protocols
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return false;
+    }
+    // Don't allow localhost/private IPs to prevent SSRF
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === 'localhost' || 
+        hostname === '127.0.0.1' || 
+        hostname === '0.0.0.0' ||
+        hostname.startsWith('192.168.') ||
+        hostname.startsWith('10.') ||
+        hostname.startsWith('172.16.') ||
+        hostname.startsWith('172.17.') ||
+        hostname.startsWith('172.18.') ||
+        hostname.startsWith('172.19.') ||
+        hostname.startsWith('172.20.') ||
+        hostname.startsWith('172.21.') ||
+        hostname.startsWith('172.22.') ||
+        hostname.startsWith('172.23.') ||
+        hostname.startsWith('172.24.') ||
+        hostname.startsWith('172.25.') ||
+        hostname.startsWith('172.26.') ||
+        hostname.startsWith('172.27.') ||
+        hostname.startsWith('172.28.') ||
+        hostname.startsWith('172.29.') ||
+        hostname.startsWith('172.30.') ||
+        hostname.startsWith('172.31.') ||
+        hostname === '[::1]' ||
+        hostname === '::1') {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function getCertificate(hostname, port = 443) {
   const startTime = Date.now();
@@ -59,10 +99,21 @@ async function getHstsStatus(hostname) {
 
 async function getDnsInfo(hostname) {
   const result = { hostname, addresses: [], cname: null, error: null };
-  try { result.addresses = await dns.resolve4(hostname); } catch (e) {
-    try { result.addresses = await dns.resolve6(hostname); } catch (e2) { result.error = 'Could not resolve'; }
+  try { 
+    result.addresses = await dns.resolve4(hostname); 
+  } catch {
+    try { 
+      result.addresses = await dns.resolve6(hostname); 
+    } catch { 
+      result.error = 'Could not resolve'; 
+    }
   }
-  try { const cnames = await dns.resolveCname(hostname); result.cname = cnames[0] || null; } catch (e) { }
+  try { 
+    const cnames = await dns.resolveCname(hostname); 
+    result.cname = cnames[0] || null; 
+  } catch {
+    // CNAME is optional, ignore errors
+  }
   return result;
 }
 
@@ -87,6 +138,11 @@ function getDnsHealth(d) {
 app.get('/inspect', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'Missing ?url= parameter' });
+  
+  // Validate URL to prevent SSRF attacks
+  if (!isValidUrl(url)) {
+    return res.status(400).json({ error: 'Invalid URL or URL not allowed' });
+  }
 
   let browser;
   try {
@@ -96,10 +152,20 @@ app.get('/inspect', async (req, res) => {
     const domains = new Set();
 
     page.on('request', (request) => {
-      try { const u = new URL(request.url()); if (u.protocol === 'https:' || u.protocol === 'http:') domains.add(u.hostname); } catch (e) { }
+      try { 
+        const u = new URL(request.url()); 
+        if (u.protocol === 'https:' || u.protocol === 'http:') domains.add(u.hostname); 
+      } catch {
+        // Invalid URL, ignore
+      }
     });
     page.on('response', (response) => {
-      try { const u = new URL(response.url()); if (u.protocol === 'https:' || u.protocol === 'http:') domains.add(u.hostname); } catch (e) { }
+      try { 
+        const u = new URL(response.url()); 
+        if (u.protocol === 'https:' || u.protocol === 'http:') domains.add(u.hostname); 
+      } catch {
+        // Invalid URL, ignore
+      }
     });
 
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
@@ -142,8 +208,21 @@ app.get('/export', (req, res) => {
       res.setHeader('Content-Disposition', 'attachment; filename="cert-inspection.json"');
       res.send(JSON.stringify(results, null, 2));
     }
-  } catch (e) { res.status(400).json({ error: 'Invalid data' }); }
+  } catch {
+    res.status(400).json({ error: 'Invalid data' }); 
+  }
 });
+
+// HTML escape function to prevent XSS
+function escapeHtml(unsafe) {
+  if (unsafe == null) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 function renderHtml(url, results) {
   const healthOrder = { error: 0, critical: 0, warning: 1, ok: 2, none: 3 };
@@ -159,39 +238,39 @@ function renderHtml(url, results) {
 
   const byIssuer = {};
   results.forEach(r => { const issuer = r.certificate?.issuer || 'No Certificate'; if (!byIssuer[issuer]) byIssuer[issuer] = []; byIssuer[issuer].push(r); });
-  const issuerOptions = Object.keys(byIssuer).map(i => `<option value="${i}">${i} (${byIssuer[i].length})</option>`).join('');
+  const issuerOptions = Object.keys(byIssuer).map(i => `<option value="${escapeHtml(i)}">${escapeHtml(i)} (${byIssuer[i].length})</option>`).join('');
 
   const rows = results.map((r, idx) => {
     const cert = r.certificate;
     const certHealth = getCertHealth(cert);
     const dnsHealth = getDnsHealth(r.dns);
-    const favicon = `https://www.google.com/s2/favicons?domain=${r.domain}&sz=32`;
+    const favicon = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.domain)}&sz=32`;
     const daysDisplay = cert ? `<div class="days-number ${certHealth.class}">${certHealth.days}</div><div class="days-label">days</div>` : '<div class="days-number none">—</div>';
-    const chainHtml = cert?.chain ? cert.chain.map((c, i) => `<div class="chain-item" style="margin-left: ${i * 15}px">↳ ${c.subject}</div>`).join('') : '';
+    const chainHtml = cert?.chain ? cert.chain.map((c, i) => `<div class="chain-item" style="margin-left: ${i * 15}px">↳ ${escapeHtml(c.subject)}</div>`).join('') : '';
     const certDetails = cert
-      ? `<div class="cert-summary"><strong>Subject:</strong> ${cert.subject}<br><strong>Issuer:</strong> ${cert.issuer}<br><strong>Valid:</strong> ${cert.validFrom} → ${cert.validTo}</div>
+      ? `<div class="cert-summary"><strong>Subject:</strong> ${escapeHtml(cert.subject)}<br><strong>Issuer:</strong> ${escapeHtml(cert.issuer)}<br><strong>Valid:</strong> ${escapeHtml(cert.validFrom)} → ${escapeHtml(cert.validTo)}</div>
          <div class="cert-details" id="details-${idx}" style="display:none">
-           <strong>Serial:</strong> <span class="copyable" onclick="copyText('${cert.serialNumber}')">${cert.serialNumber}</span><br>
-           <strong>Fingerprint:</strong> <span class="copyable" onclick="copyText('${cert.fingerprint}')">${cert.fingerprint}</span><br>
-           <strong>TLS:</strong> <span class="tls-badge ${cert.tlsVersion === 'TLSv1.3' ? 'tls13' : 'tls12'}">${cert.tlsVersion}</span>
+           <strong>Serial:</strong> <span class="copyable" onclick="copyText('${escapeHtml(cert.serialNumber)}')">${escapeHtml(cert.serialNumber)}</span><br>
+           <strong>Fingerprint:</strong> <span class="copyable" onclick="copyText('${escapeHtml(cert.fingerprint)}')">${escapeHtml(cert.fingerprint)}</span><br>
+           <strong>TLS:</strong> <span class="tls-badge ${cert.tlsVersion === 'TLSv1.3' ? 'tls13' : 'tls12'}">${escapeHtml(cert.tlsVersion)}</span>
            <strong>Response:</strong> ${cert.responseTime}ms
            <strong>HSTS:</strong> ${r.hsts?.enabled ? '✅' : '❌'}<br>
            ${chainHtml ? `<strong>Chain:</strong><div class="chain">${chainHtml}</div>` : ''}
          </div>` : '<em>No HTTPS cert</em>';
-    return `<tr class="row-${certHealth.class}" data-status="${certHealth.status}" data-issuer="${cert?.issuer || 'none'}" data-domain="${r.domain}">
+    return `<tr class="row-${certHealth.class}" data-status="${certHealth.status}" data-issuer="${escapeHtml(cert?.issuer || 'none')}" data-domain="${escapeHtml(r.domain)}">
       <td class="status-cell">${certHealth.icon}</td>
-      <td class="domain-cell"><img src="${favicon}" class="favicon" onerror="this.style.display='none'"><strong class="copyable" onclick="copyText('${r.domain}')">${r.domain}</strong></td>
+      <td class="domain-cell"><img src="${favicon}" class="favicon" onerror="this.style.display='none'"><strong class="copyable" onclick="copyText('${escapeHtml(r.domain)}')">${escapeHtml(r.domain)}</strong></td>
       <td class="days-cell">${daysDisplay}</td>
-      <td class="dns-cell">${dnsHealth.icon} ${r.dns.addresses?.join(', ') || r.dns.error || 'N/A'}<br><small>CNAME: ${r.dns.cname || '-'}</small></td>
-      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}<span class="health-badge ${certHealth.class}">${certHealth.message}</span></td>
+      <td class="dns-cell">${dnsHealth.icon} ${escapeHtml(r.dns.addresses?.join(', ') || r.dns.error || 'N/A')}<br><small>CNAME: ${escapeHtml(r.dns.cname || '-')}</small></td>
+      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}<span class="health-badge ${certHealth.class}">${escapeHtml(certHealth.message)}</span></td>
     </tr>`;
   }).join('');
 
   const summaryCards = results.map(r => {
     const health = getCertHealth(r.certificate);
-    return `<div class="summary-card ${health.class}" data-status="${health.status}" data-domain="${r.domain}">
-      <img src="https://www.google.com/s2/favicons?domain=${r.domain}&sz=32" onerror="this.style.display='none'">
-      <span class="domain">${r.domain}</span><span class="days ${health.class}">${health.days ?? '—'}</span>
+    return `<div class="summary-card ${health.class}" data-status="${health.status}" data-domain="${escapeHtml(r.domain)}">
+      <img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.domain)}&sz=32" onerror="this.style.display='none'">
+      <span class="domain">${escapeHtml(r.domain)}</span><span class="days ${health.class}">${health.days ?? '—'}</span>
     </div>`;
   }).join('');
 
@@ -282,7 +361,7 @@ function renderHtml(url, results) {
 </head>
 <body>
   <h1>🔒 Certificate Inspector</h1>
-  <div class="url"><strong>Inspected URL:</strong> ${url}</div>
+  <div class="url"><strong>Inspected URL:</strong> ${escapeHtml(url)}</div>
   
   <div class="progress-bar">
     ${summary.ok > 0 ? `<div class="progress-segment progress-ok" style="width: ${(summary.ok/summary.total)*100}%">${summary.ok}</div>` : ''}
