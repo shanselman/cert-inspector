@@ -88,7 +88,15 @@ Then open http://localhost:3000
 
 Run locally without Node.js installed. **The app automatically downloads the browser on first run!**
 
-Download from [Releases](https://github.com/shanselman/cert-inspector/releases), then:
+**Download from [Releases](https://github.com/shanselman/cert-inspector/releases):**
+
+| Platform | File |
+|----------|------|
+| Windows | `cert-inspector-win.exe` |
+| macOS | `cert-inspector-macos` |
+| Linux | `cert-inspector-linux` |
+
+Then just run it:
 
 **Windows:**
 ```

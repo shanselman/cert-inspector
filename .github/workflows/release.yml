@@ -1,0 +1,86 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: node18-linux-x64
+            output: cert-inspector-linux
+          - os: macos-latest
+            target: node18-macos-x64
+            output: cert-inspector-macos
+          - os: windows-latest
+            target: node18-win-x64
+            output: cert-inspector-win.exe
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build executable
+        run: npx pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.output }}
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/cert-inspector-linux/cert-inspector-linux
+            dist/cert-inspector-macos/cert-inspector-macos
+            dist/cert-inspector-win.exe/cert-inspector-win.exe
+          body: |
+            ## 🔒 Certificate Inspector ${{ github.ref_name }}
+            
+            ### Downloads
+            
+            | Platform | Download |
+            |----------|----------|
+            | Windows | `cert-inspector-win.exe` |
+            | macOS | `cert-inspector-macos` |
+            | Linux | `cert-inspector-linux` |
+            
+            ### Usage
+            
+            1. Download the executable for your platform
+            2. Run it (on macOS/Linux: `chmod +x` first)
+            3. Open http://localhost:3000
+            
+            > **Note:** On first run, the app will automatically download the Chromium browser (~150MB, one-time).
+          generate_release_notes: true
