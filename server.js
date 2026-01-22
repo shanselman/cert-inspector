@@ -6,7 +6,8 @@ const https = require('https');
 const { execSync, spawn } = require('child_process');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const AUTO_OPEN = process.env.NO_OPEN !== '1'; // Set NO_OPEN=1 to disable
 
 // Check if Playwright browsers are installed, offer to install if not
 async function ensureBrowserInstalled() {
@@ -456,9 +457,20 @@ async function start() {
     process.exit(1);
   }
   
-  app.listen(PORT, () => {
-    console.log(`\n🔒 Certificate Inspector running at http://localhost:${PORT}`);
-    console.log(`   Usage: http://localhost:${PORT}/inspect?url=https://example.com\n`);
+  app.listen(PORT, async () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`\n🔒 Certificate Inspector running at ${url}`);
+    console.log(`   Usage: ${url}/inspect?url=https://example.com\n`);
+    
+    if (AUTO_OPEN) {
+      try {
+        const open = (await import('open')).default;
+        await open(url);
+        console.log('   📂 Opened in your default browser\n');
+      } catch (e) {
+        // Silent fail - browser open is nice-to-have
+      }
+    }
   });
 }
 
