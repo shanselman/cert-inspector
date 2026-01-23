@@ -38,6 +38,11 @@ async function ensureBrowserInstalled() {
           stdio: 'inherit' 
         });
         
+        // Check for spawn errors (e.g., node command not found)
+        if (result.error) {
+          throw new Error(`Failed to spawn installation process: ${result.error.message}`);
+        }
+        
         if (result.status !== 0) {
           throw new Error(`Installation failed with exit code ${result.status}`);
         }
