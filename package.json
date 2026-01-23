@@ -14,7 +14,10 @@
     "docker:run": "docker run -p 3000:3000 cert-inspector"
   },
   "pkg": {
-    "scripts": "server.js",
+    "scripts": [
+      "server.js",
+      "node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js"
+    ],
     "assets": [],
     "outputPath": "dist"
   },

@@ -22,16 +22,16 @@ async function ensureBrowserInstalled() {
       console.log('📦 Installing Chromium browser (this only happens once)...\n');
       
       try {
-        // Use direct node execution instead of npx for standalone executables
-        const path = require('path');
-        const playwrightPath = require.resolve('playwright');
-        const playwrightCliPath = path.join(path.dirname(playwrightPath), 'cli.js');
-        execSync(`node "${playwrightCliPath}" install chromium`, { stdio: 'inherit' });
+        // Use Playwright's registry API directly for browser installation
+        // This approach works in both regular Node.js and pkg-bundled executables
+        const { registry } = require('playwright-core/lib/server/registry/index');
+        const chromiumExecutable = registry.findExecutable('chromium');
+        await registry.install([chromiumExecutable], false);
         console.log('\n✅ Browser installed successfully!\n');
         return true;
       } catch (installError) {
         console.error('\n❌ Failed to install browser automatically.');
-        console.error('Please try running manually with node installed.\n');
+        console.error('Error:', installError.message);
         return false;
       }
     }
