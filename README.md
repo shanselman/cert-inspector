@@ -223,6 +223,7 @@ git clone https://github.com/shanselman/cert-inspector.git
 cd cert-inspector
 npm install
 npm run build:mac
+chmod +x dist/cert-inspector-macos
 ./dist/cert-inspector-macos
 ```
 
