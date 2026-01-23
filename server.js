@@ -24,8 +24,14 @@ async function ensureBrowserInstalled() {
       try {
         // Use Playwright's registry API directly for browser installation
         // This approach works in both regular Node.js and pkg-bundled executables
+        // Note: Using internal API as Playwright doesn't provide a public API for programmatic installation
         const { registry } = require('playwright-core/lib/server/registry/index');
         const chromiumExecutable = registry.findExecutable('chromium');
+        
+        if (!chromiumExecutable) {
+          throw new Error('Chromium browser definition not found in Playwright registry');
+        }
+        
         await registry.install([chromiumExecutable], false);
         console.log('\n✅ Browser installed successfully!\n');
         return true;
