@@ -4,6 +4,7 @@ const dns = require('dns').promises;
 const tls = require('tls');
 const https = require('https');
 const { execSync, spawn } = require('child_process');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,12 +23,17 @@ async function ensureBrowserInstalled() {
       console.log('📦 Installing Chromium browser (this only happens once)...\n');
       
       try {
-        execSync('npx playwright install chromium', { stdio: 'inherit' });
+        // Find the playwright CLI that's bundled with the package
+        // This works both in regular npm install and in pkg-bundled executables
+        const playwrightPath = path.dirname(require.resolve('playwright/package.json'));
+        const playwrightCliPath = path.join(playwrightPath, 'cli.js');
+        execSync(`node "${playwrightCliPath}" install chromium`, { stdio: 'inherit' });
         console.log('\n✅ Browser installed successfully!\n');
         return true;
       } catch (installError) {
         console.error('\n❌ Failed to install browser automatically.');
-        console.error('Please run manually: npx playwright install chromium\n');
+        console.error('Error:', installError.message);
+        console.error('Please run manually: node node_modules/playwright/cli.js install chromium\n');
         return false;
       }
     }
