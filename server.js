@@ -4,10 +4,79 @@ const dns = require('dns').promises;
 const tls = require('tls');
 const https = require('https');
 const { execSync, spawn } = require('child_process');
+const whois = require('whois-json');
+const psl = require('psl');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTO_OPEN = process.env.NO_OPEN !== '1'; // Set NO_OPEN=1 to disable
+
+// Extract root domain from hostname (e.g., api.github.com → github.com)
+function getRootDomain(hostname) {
+  const parsed = psl.parse(hostname);
+  return parsed.domain || hostname; // fallback to hostname if parsing fails
+}
+
+// Get WHOIS info for a domain
+async function getWhoisInfo(rootDomain) {
+  try {
+    const result = await whois(rootDomain);
+    
+    // WHOIS responses vary wildly - try common field names for expiry
+    const expiryField = result.expirationDate || result.registryExpiryDate || 
+                        result.registrarRegistrationExpirationDate || result.expiresOn ||
+                        result.expiry_date || result.paid_till;
+    
+    if (!expiryField) {
+      return { rootDomain, error: 'No expiry date found', registrar: result.registrar || null };
+    }
+    
+    const expiryDate = new Date(expiryField);
+    if (isNaN(expiryDate.getTime())) {
+      return { rootDomain, error: 'Invalid expiry date', registrar: result.registrar || null };
+    }
+    
+    const now = new Date();
+    const daysUntilExpiry = Math.floor((expiryDate - now) / (1000 * 60 * 60 * 24));
+    
+    return {
+      rootDomain,
+      registrar: result.registrar || result.registrarName || 'Unknown',
+      expiryDate: expiryDate.toISOString().split('T')[0],
+      daysUntilExpiry,
+      error: null
+    };
+  } catch (error) {
+    return { rootDomain, error: error.message, registrar: null, daysUntilExpiry: null };
+  }
+}
+
+// Get health status for WHOIS (mirrors getCertHealth)
+function getWhoisHealth(whoisInfo) {
+  if (!whoisInfo || whoisInfo.error) {
+    return { status: 'unknown', icon: '❓', class: 'none', message: 'WHOIS unavailable', days: null };
+  }
+  
+  const days = whoisInfo.daysUntilExpiry;
+  if (days < 0) return { status: 'error', icon: '🔴', class: 'error', message: 'Domain EXPIRED', days };
+  if (days <= 7) return { status: 'critical', icon: '🔴', class: 'error', message: `Domain expires in ${days} days!`, days };
+  if (days <= 30) return { status: 'warning', icon: '🟡', class: 'warning', message: `Domain expires in ${days} days`, days };
+  return { status: 'ok', icon: '🟢', class: 'ok', message: `Domain valid for ${days} days`, days };
+}
+
+// Get overall health (worst of cert and domain)
+function getOverallHealth(certHealth, whoisHealth) {
+  const statusPriority = { error: 0, critical: 0, warning: 1, ok: 2, none: 3, unknown: 3 };
+  
+  const certPriority = statusPriority[certHealth.status] ?? 3;
+  const whoisPriority = statusPriority[whoisHealth?.status] ?? 3;
+  
+  if (certPriority <= whoisPriority) {
+    return { ...certHealth, source: 'cert' };
+  } else {
+    return { ...whoisHealth, source: 'domain' };
+  }
+}
 
 // Check if Playwright browsers are installed, offer to install if not
 async function ensureBrowserInstalled() {
@@ -132,6 +201,7 @@ function normalizeUrl(input) {
 // Streaming endpoint for real-time progress
 app.get('/inspect-stream', async (req, res) => {
   const url = normalizeUrl(req.query.url);
+  const includeWhois = req.query.whois === '1';
   if (!url) {
     res.status(400).json({ error: 'Invalid URL' });
     return;
@@ -176,6 +246,23 @@ app.get('/inspect-stream', async (req, res) => {
     const domainList = Array.from(domains).sort();
     send({ phase: `🔍 Inspecting ${domainList.length} domains...`, domainCount: domainList.length });
 
+    // Pre-fetch WHOIS for unique root domains (dedupe)
+    const whoisResults = new Map();
+    if (includeWhois) {
+      const rootDomains = [...new Set(domainList.map(h => getRootDomain(h)))];
+      send({ phase: `🌐 Looking up WHOIS for ${rootDomains.length} root domains...` });
+      for (const root of rootDomains) {
+        send({ log: `WHOIS lookup: ${root}...`, type: 'info' });
+        const whoisInfo = await getWhoisInfo(root);
+        whoisResults.set(root, whoisInfo);
+        if (whoisInfo.error) {
+          send({ log: `⚠ ${root}: ${whoisInfo.error}`, type: 'warn' });
+        } else {
+          send({ log: `✓ ${root}: expires ${whoisInfo.expiryDate}`, type: 'success' });
+        }
+      }
+    }
+
     let checked = 0;
     for (const hostname of domainList) {
       send({ log: `Checking ${hostname}...`, type: 'info', checked: checked });
@@ -185,10 +272,14 @@ app.get('/inspect-stream', async (req, res) => {
         getHstsStatus(hostname)
       ]);
       checked++;
-      const health = getCertHealth(certInfo);
+      const certHealth = getCertHealth(certInfo);
+      const whoisInfo = includeWhois ? whoisResults.get(getRootDomain(hostname)) : null;
+      const whoisHealth = whoisInfo ? getWhoisHealth(whoisInfo) : null;
+      const overallHealth = includeWhois ? getOverallHealth(certHealth, whoisHealth) : certHealth;
+      
       send({ 
-        log: `✓ ${hostname}: ${health.message}`, 
-        type: health.status === 'ok' ? 'success' : (health.status === 'warning' ? 'warn' : (health.status === 'none' ? 'info' : 'error')),
+        log: `✓ ${hostname}: ${overallHealth.message}${overallHealth.source === 'domain' ? ' (domain)' : ''}`, 
+        type: overallHealth.status === 'ok' ? 'success' : (overallHealth.status === 'warning' ? 'warn' : (overallHealth.status === 'none' || overallHealth.status === 'unknown' ? 'info' : 'error')),
         checked: checked 
       });
     }
@@ -203,6 +294,7 @@ app.get('/inspect-stream', async (req, res) => {
 
 app.get('/inspect', async (req, res) => {
   const url = normalizeUrl(req.query.url);
+  const includeWhois = req.query.whois === '1';
   if (!url) return res.status(400).json({ error: 'Invalid URL' });
 
   let browser;
@@ -224,13 +316,25 @@ app.get('/inspect', async (req, res) => {
     await browser.close();
     browser = null;
 
-    const results = [];
-    for (const hostname of Array.from(domains).sort()) {
-      const [dnsInfo, certInfo, hstsInfo] = await Promise.all([getDnsInfo(hostname), getCertificate(hostname), getHstsStatus(hostname)]);
-      results.push({ domain: hostname, dns: dnsInfo, certificate: certInfo, hsts: hstsInfo });
+    const domainList = Array.from(domains).sort();
+    
+    // Pre-fetch WHOIS for unique root domains
+    const whoisResults = new Map();
+    if (includeWhois) {
+      const rootDomains = [...new Set(domainList.map(h => getRootDomain(h)))];
+      for (const root of rootDomains) {
+        whoisResults.set(root, await getWhoisInfo(root));
+      }
     }
 
-    if (req.accepts('html')) res.send(renderHtml(url, results));
+    const results = [];
+    for (const hostname of domainList) {
+      const [dnsInfo, certInfo, hstsInfo] = await Promise.all([getDnsInfo(hostname), getCertificate(hostname), getHstsStatus(hostname)]);
+      const whoisInfo = includeWhois ? whoisResults.get(getRootDomain(hostname)) : null;
+      results.push({ domain: hostname, dns: dnsInfo, certificate: certInfo, hsts: hstsInfo, whois: whoisInfo });
+    }
+
+    if (req.accepts('html')) res.send(renderHtml(url, results, includeWhois));
     else res.json({ url, domains: results });
   } catch (error) {
     if (browser) await browser.close();
@@ -262,16 +366,24 @@ app.get('/export', (req, res) => {
   } catch (e) { res.status(400).json({ error: 'Invalid data' }); }
 });
 
-function renderHtml(url, results) {
-  const healthOrder = { error: 0, critical: 0, warning: 1, ok: 2, none: 3 };
-  results.sort((a, b) => healthOrder[getCertHealth(a.certificate).status] - healthOrder[getCertHealth(b.certificate).status]);
+function renderHtml(url, results, includeWhois = false) {
+  // Helper to get overall health for a result
+  const getResultHealth = (r) => {
+    const certHealth = getCertHealth(r.certificate);
+    if (!includeWhois || !r.whois) return certHealth;
+    const whoisHealth = getWhoisHealth(r.whois);
+    return getOverallHealth(certHealth, whoisHealth);
+  };
+
+  const healthOrder = { error: 0, critical: 0, warning: 1, ok: 2, none: 3, unknown: 3 };
+  results.sort((a, b) => healthOrder[getResultHealth(a).status] - healthOrder[getResultHealth(b).status]);
 
   const summary = {
     total: results.length,
-    ok: results.filter(r => getCertHealth(r.certificate).status === 'ok').length,
-    warning: results.filter(r => getCertHealth(r.certificate).status === 'warning').length,
-    error: results.filter(r => ['error', 'critical'].includes(getCertHealth(r.certificate).status)).length,
-    none: results.filter(r => getCertHealth(r.certificate).status === 'none').length
+    ok: results.filter(r => getResultHealth(r).status === 'ok').length,
+    warning: results.filter(r => getResultHealth(r).status === 'warning').length,
+    error: results.filter(r => ['error', 'critical'].includes(getResultHealth(r).status)).length,
+    none: results.filter(r => ['none', 'unknown'].includes(getResultHealth(r).status)).length
   };
 
   const byIssuer = {};
@@ -281,31 +393,48 @@ function renderHtml(url, results) {
   const rows = results.map((r, idx) => {
     const cert = r.certificate;
     const certHealth = getCertHealth(cert);
+    const whoisHealth = r.whois ? getWhoisHealth(r.whois) : null;
+    const overallHealth = includeWhois && whoisHealth ? getOverallHealth(certHealth, whoisHealth) : certHealth;
     const dnsHealth = getDnsHealth(r.dns);
     const favicon = `https://www.google.com/s2/favicons?domain=${r.domain}&sz=32`;
-    const daysDisplay = cert ? `<div class="days-number ${certHealth.class}">${certHealth.days}</div><div class="days-label">days</div>` : '<div class="days-number none">—</div>';
+    
+    // Show worst-case days with indicator of source
+    const worstDays = overallHealth.days;
+    const sourceIndicator = overallHealth.source === 'domain' ? '🌐' : (cert ? '🔐' : '');
+    const daysDisplay = worstDays !== null ? `<div class="days-number ${overallHealth.class}">${worstDays}</div><div class="days-label">${sourceIndicator} days</div>` : '<div class="days-number none">—</div>';
+    
     const chainHtml = cert?.chain ? cert.chain.map((c, i) => `<div class="chain-item" style="margin-left: ${i * 15}px">↳ ${c.subject}</div>`).join('') : '';
+    
+    // WHOIS details section
+    const whoisDetails = r.whois ? `
+      <div class="whois-info">
+        <strong>🌐 Domain:</strong> ${r.whois.error ? `<span class="error">${r.whois.error}</span>` : `${r.whois.rootDomain} expires ${r.whois.expiryDate} (${r.whois.daysUntilExpiry} days)`}
+        ${r.whois.registrar ? `<br><strong>Registrar:</strong> ${r.whois.registrar}` : ''}
+      </div>` : '';
+    
     const certDetails = cert
-      ? `<div class="cert-summary"><strong>Subject:</strong> ${cert.subject}<br><strong>Issuer:</strong> ${cert.issuer}<br><strong>Valid:</strong> ${cert.validFrom} → ${cert.validTo}</div>
+      ? `<div class="cert-summary"><strong>🔐 Cert:</strong> ${cert.subject} (${certHealth.days} days)<br><strong>Issuer:</strong> ${cert.issuer}</div>
+         ${whoisDetails}
          <div class="cert-details" id="details-${idx}" style="display:none">
+           <strong>Valid:</strong> ${cert.validFrom} → ${cert.validTo}<br>
            <strong>Serial:</strong> <span class="copyable" onclick="copyText('${cert.serialNumber}')">${cert.serialNumber}</span><br>
            <strong>Fingerprint:</strong> <span class="copyable" onclick="copyText('${cert.fingerprint}')">${cert.fingerprint}</span><br>
            <strong>TLS:</strong> <span class="tls-badge ${cert.tlsVersion === 'TLSv1.3' ? 'tls13' : 'tls12'}">${cert.tlsVersion}</span>
            <strong>Response:</strong> ${cert.responseTime}ms
            <strong>HSTS:</strong> ${r.hsts?.enabled ? '✅' : '❌'}<br>
            ${chainHtml ? `<strong>Chain:</strong><div class="chain">${chainHtml}</div>` : ''}
-         </div>` : '<em>No HTTPS cert</em>';
-    return `<tr class="row-${certHealth.class}" data-status="${certHealth.status}" data-issuer="${cert?.issuer || 'none'}" data-domain="${r.domain}">
-      <td class="status-cell">${certHealth.icon}</td>
+         </div>` : `<em>No HTTPS cert</em>${whoisDetails}`;
+    return `<tr class="row-${overallHealth.class}" data-status="${overallHealth.status}" data-issuer="${cert?.issuer || 'none'}" data-domain="${r.domain}">
+      <td class="status-cell">${overallHealth.icon}</td>
       <td class="domain-cell"><img src="${favicon}" class="favicon" onerror="this.style.display='none'"><strong class="copyable" onclick="copyText('${r.domain}')">${r.domain}</strong></td>
       <td class="days-cell">${daysDisplay}</td>
       <td class="dns-cell">${dnsHealth.icon} ${r.dns.addresses?.join(', ') || r.dns.error || 'N/A'}<br><small>CNAME: ${r.dns.cname || '-'}</small></td>
-      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}<span class="health-badge ${certHealth.class}">${certHealth.message}</span></td>
+      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}<span class="health-badge ${overallHealth.class}">${overallHealth.message}</span></td>
     </tr>`;
   }).join('');
 
   const summaryCards = results.map(r => {
-    const health = getCertHealth(r.certificate);
+    const health = includeWhois && r.whois ? getOverallHealth(getCertHealth(r.certificate), getWhoisHealth(r.whois)) : getCertHealth(r.certificate);
     return `<div class="summary-card ${health.class}" data-status="${health.status}" data-domain="${r.domain}">
       <img src="https://www.google.com/s2/favicons?domain=${r.domain}&sz=32" onerror="this.style.display='none'">
       <span class="domain">${r.domain}</span><span class="days ${health.class}">${health.days ?? '—'}</span>
@@ -524,6 +653,9 @@ app.get('/', (req, res) => {
     button { padding: 12px 24px; font-size: 16px; background: #4a90d9; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px; }
     button:hover:not(:disabled) { background: #357abd; }
     button:disabled { background: #ccc; cursor: not-allowed; }
+    .options { margin: 12px 0; }
+    .whois-option { display: flex; align-items: center; gap: 8px; cursor: pointer; color: #555; }
+    .whois-option small { color: #888; }
     #progress { margin-top: 20px; display: none; }
     #progress.active { display: block; }
     .progress-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -548,6 +680,9 @@ app.get('/', (req, res) => {
   <p>Enter a URL to inspect all domains, DNS lookups, and SSL certificates in the request tree.</p>
   <form id="inspectForm">
     <input type="text" id="urlInput" name="url" placeholder="example.com or https://example.com" required>
+    <div class="options">
+      <label class="whois-option"><input type="checkbox" id="whoisCheck"> 🌐 Include domain WHOIS lookup <small>(slower, checks domain expiry)</small></label>
+    </div>
     <button type="submit" id="submitBtn">Inspect</button>
   </form>
   <div id="progress">
@@ -566,6 +701,7 @@ app.get('/', (req, res) => {
     const form = document.getElementById('inspectForm');
     const btn = document.getElementById('submitBtn');
     const urlInput = document.getElementById('urlInput');
+    const whoisCheck = document.getElementById('whoisCheck');
     const progress = document.getElementById('progress');
     const log = document.getElementById('log');
     const statusText = document.getElementById('statusText');
@@ -599,6 +735,7 @@ app.get('/', (req, res) => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const url = normalizeUrl(urlInput.value);
+      const includeWhois = whoisCheck.checked;
       
       if (!url) {
         alert('Please enter a valid URL');
@@ -614,9 +751,10 @@ app.get('/', (req, res) => {
       startTime = Date.now();
       elapsedInterval = setInterval(updateElapsed, 1000);
       
-      addLog('Starting inspection of ' + url, 'phase');
+      addLog('Starting inspection of ' + url + (includeWhois ? ' (with WHOIS)' : ''), 'phase');
       
-      const evtSource = new EventSource('/inspect-stream?url=' + encodeURIComponent(url));
+      const whoisParam = includeWhois ? '&whois=1' : '';
+      const evtSource = new EventSource('/inspect-stream?url=' + encodeURIComponent(url) + whoisParam);
       
       evtSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
@@ -637,7 +775,7 @@ app.get('/', (req, res) => {
         if (data.done) {
           evtSource.close();
           clearInterval(elapsedInterval);
-          window.location.href = '/inspect?url=' + encodeURIComponent(url);
+          window.location.href = '/inspect?url=' + encodeURIComponent(url) + whoisParam;
         }
         if (data.error) {
           evtSource.close();

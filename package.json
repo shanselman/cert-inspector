@@ -21,7 +21,9 @@
   "dependencies": {
     "express": "^4.18.2",
     "open": "^11.0.0",
-    "playwright": "1.52.0"
+    "playwright": "1.52.0",
+    "psl": "^1.15.0",
+    "whois-json": "^2.0.4"
   },
   "devDependencies": {
     "pkg": "^5.8.1"
