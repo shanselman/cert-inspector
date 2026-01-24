@@ -9,6 +9,26 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTO_OPEN = process.env.NO_OPEN !== '1'; // Set NO_OPEN=1 to disable
 
+// Helper to pause on error so users can see the message before terminal closes
+async function pauseOnError(message) {
+  console.error('\n' + '='.repeat(60));
+  console.error('❌ ' + message);
+  console.error('='.repeat(60));
+  console.error('\nPlease report this issue at:');
+  console.error('https://github.com/shanselman/cert-inspector/issues\n');
+  
+  // Only pause if running interactively (not piped)
+  if (process.stdin.isTTY) {
+    console.error('Press Enter to exit...');
+    await new Promise(resolve => {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.once('data', resolve);
+    });
+  }
+  process.exit(1);
+}
+
 // Check if Playwright browsers are installed, offer to install if not
 async function ensureBrowserInstalled() {
   try {
@@ -26,19 +46,22 @@ async function ensureBrowserInstalled() {
         // This approach works in both regular Node.js and pkg-bundled executables
         // Note: Using internal API as Playwright doesn't provide a public API for programmatic installation
         const { registry } = require('playwright-core/lib/server/registry/index');
-        const chromiumExecutable = registry.findExecutable('chromium');
         
-        if (!chromiumExecutable) {
-          throw new Error('Chromium browser definition not found in Playwright registry');
+        // Install chromium, chromium-headless-shell (required for headless mode), and winldd (Windows dependency checker)
+        const browserNames = ['chromium', 'chromium-headless-shell', 'winldd'];
+        const executables = browserNames
+          .map(name => registry.findExecutable(name))
+          .filter(exe => exe !== null);
+        
+        if (executables.length === 0) {
+          throw new Error('Chromium browser definitions not found in Playwright registry');
         }
         
-        await registry.install([chromiumExecutable], false);
+        await registry.install(executables, false);
         console.log('\n✅ Browser installed successfully!\n');
         return true;
       } catch (installError) {
-        console.error('\n❌ Failed to install browser automatically.');
-        console.error('Error:', installError.message);
-        return false;
+        await pauseOnError(`Failed to install browser automatically.\n\nError: ${installError.message}`);
       }
     }
     throw error;
@@ -686,9 +709,14 @@ async function start() {
     
     if (AUTO_OPEN) {
       try {
-        const open = (await import('open')).default;
-        await open(url);
-        console.log('   📂 Opened in your default browser\n');
+        // Use native OS commands for reliable browser opening in pkg-bundled executables
+        const { exec } = require('child_process');
+        const cmd = process.platform === 'win32' ? `start "" "${url}"`
+                  : process.platform === 'darwin' ? `open "${url}"`
+                  : `xdg-open "${url}"`;
+        exec(cmd, (err) => {
+          if (!err) console.log('   📂 Opened in your default browser\n');
+        });
       } catch (e) {
         // Silent fail - browser open is nice-to-have
       }
@@ -696,4 +724,15 @@ async function start() {
   });
 }
 
-start();
+// Global error handlers
+process.on('uncaughtException', async (error) => {
+  await pauseOnError(`Unexpected error: ${error.message}\n\nStack: ${error.stack}`);
+});
+
+process.on('unhandledRejection', async (reason) => {
+  await pauseOnError(`Unhandled promise rejection: ${reason}`);
+});
+
+start().catch(async (error) => {
+  await pauseOnError(`Failed to start server: ${error.message}`);
+});
