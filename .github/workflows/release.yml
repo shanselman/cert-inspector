@@ -83,4 +83,15 @@ jobs:
             3. Open http://localhost:3000
             
             > **Note:** On first run, the app will automatically download the Chromium browser (~150MB, one-time).
+            
+            ### macOS Users
+            
+            If you see a security warning about an unverified developer, run:
+            ```bash
+            xattr -d com.apple.quarantine cert-inspector-macos
+            chmod +x cert-inspector-macos
+            ./cert-inspector-macos
+            ```
+            
+            See the [README](https://github.com/shanselman/cert-inspector#troubleshooting) for more details.
           generate_release_notes: true

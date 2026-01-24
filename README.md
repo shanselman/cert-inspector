@@ -78,6 +78,8 @@ chmod +x cert-inspector-macos  # or cert-inspector-linux
 ./cert-inspector-macos
 ```
 
+> ⚠️ **macOS Users:** See [Troubleshooting](#troubleshooting) if you get a security warning about an unverified developer.
+
 On first run you'll see:
 ```
 ⚠️  Playwright browser not found
@@ -165,6 +167,65 @@ curl "http://localhost:3000/inspect?url=https://example.com"
 - **Compliance** - Verify TLS versions and HSTS deployment
 - **Debugging** - Understand the full network footprint of a page
 - **Certificate monitoring** - Catch expiring certificates before they cause outages
+
+## Troubleshooting
+
+### macOS: "Apple could not verify cert-inspector-macos is free of malware"
+
+When launching the macOS executable, you may see this security warning:
+
+> **"cert-inspector-macos" cannot be opened because Apple cannot verify that it is free of malware.**
+
+**Why does this happen?**
+
+macOS Gatekeeper blocks applications that aren't signed with an Apple Developer certificate. The cert-inspector executables are not code-signed because:
+- Code signing requires an annual Apple Developer Program membership ($99/year)
+- This is an open-source project built via GitHub Actions
+- The unsigned binary is safe - you can verify the source code and build process
+
+**How to fix it:**
+
+**Method 1: Remove quarantine attribute (Recommended)**
+
+Open Terminal and run:
+```bash
+xattr -d com.apple.quarantine cert-inspector-macos
+chmod +x cert-inspector-macos
+./cert-inspector-macos
+```
+
+This removes the quarantine flag that macOS applies to downloaded files.
+
+**Method 2: Allow in System Settings**
+
+1. Try to open the app (double-click or run `./cert-inspector-macos`)
+2. When the warning appears, click **"Done"** or **"Cancel"**
+3. Open **System Settings** → **Privacy & Security**
+4. Scroll down to the **Security** section
+5. Click **"Open Anyway"** next to the cert-inspector message
+6. Confirm by clicking **"Open"** in the new dialog
+
+**Method 3: Disable Gatekeeper temporarily (Not recommended)**
+
+```bash
+sudo spctl --master-disable
+# Run the app
+sudo spctl --master-enable  # Re-enable after
+```
+
+⚠️ This disables Gatekeeper system-wide and reduces security. Only use if Methods 1 and 2 don't work.
+
+**Build it yourself:**
+
+If you prefer, build the executable yourself from source:
+```bash
+git clone https://github.com/shanselman/cert-inspector.git
+cd cert-inspector
+npm install
+npm run build:mac
+chmod +x dist/cert-inspector-macos
+./dist/cert-inspector-macos
+```
 
 ## Screenshots
 
