@@ -1,0 +1,46 @@
+name: PR Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: node18-linux-x64
+            output: cert-inspector-linux
+          - os: macos-latest
+            target: node18-macos-x64
+            output: cert-inspector-macos
+          - os: windows-latest
+            target: node18-win-x64
+            output: cert-inspector-win.exe
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Build executable
+        run: npx pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.output }}
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+          retention-days: 7  # Keep PR artifacts for 7 days
