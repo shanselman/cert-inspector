@@ -251,3 +251,16 @@ MIT
 ## Contributing
 
 PRs welcome! Please open an issue first to discuss what you'd like to change.
+
+### Spell Checking
+
+This repository uses [codespell](https://github.com/codespell-project/codespell) to check for spelling errors. The spell checker runs automatically on all pull requests.
+
+To run the spell checker locally:
+
+```bash
+pip install codespell
+codespell
+```
+
+If you need to add technical terms or intentional spellings to the ignore list, edit the `.codespellrc` file.
