@@ -1,0 +1,36 @@
+name: Spell Check
+
+on:
+  pull_request:
+    paths:
+      - '**.md'
+      - '**.js'
+      - '**.yml'
+      - '**.yaml'
+      - '**.txt'
+  push:
+    branches:
+      - main
+    paths:
+      - '**.md'
+      - '**.js'
+      - '**.yml'
+      - '**.yaml'
+      - '**.txt'
+
+jobs:
+  spell-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
+      - name: Install codespell
+        run: pip install codespell
+      
+      - name: Run spell check
+        run: codespell --config .codespellrc
