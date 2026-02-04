@@ -1,2 +1,2 @@
 [codespell]
-skip = .git,node_modules,package-lock.json,dist 
+skip = .git,node_modules,package-lock.json,dist
