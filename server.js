@@ -398,22 +398,29 @@ function renderHtml(url, results, includeWhois = false) {
     const dnsHealth = getDnsHealth(r.dns);
     const favicon = `https://www.google.com/s2/favicons?domain=${r.domain}&sz=32`;
     
-    // Show worst-case days with indicator of source
-    const worstDays = overallHealth.days;
-    const sourceIndicator = overallHealth.source === 'domain' ? '🌐' : (cert ? '🔐' : '');
-    const daysDisplay = worstDays !== null ? `<div class="days-number ${overallHealth.class}">${worstDays}</div><div class="days-label">${sourceIndicator} days</div>` : '<div class="days-number none">—</div>';
+    // Cert days column
+    const certDaysDisplay = cert 
+      ? `<div class="days-number ${certHealth.class}">${certHealth.days}</div>` 
+      : '<div class="days-number none">—</div>';
+    
+    // Domain days column (only if WHOIS enabled)
+    const domainDaysDisplay = includeWhois 
+      ? (whoisHealth && whoisHealth.days !== null
+        ? `<div class="days-number ${whoisHealth.class}">${whoisHealth.days}</div>`
+        : '<div class="days-number none">—</div>')
+      : '';
     
     const chainHtml = cert?.chain ? cert.chain.map((c, i) => `<div class="chain-item" style="margin-left: ${i * 15}px">↳ ${c.subject}</div>`).join('') : '';
     
     // WHOIS details section
     const whoisDetails = r.whois ? `
       <div class="whois-info">
-        <strong>🌐 Domain:</strong> ${r.whois.error ? `<span class="error">${r.whois.error}</span>` : `${r.whois.rootDomain} expires ${r.whois.expiryDate} (${r.whois.daysUntilExpiry} days)`}
+        <strong>🌐 Domain:</strong> ${r.whois.error ? `<span class="error">${r.whois.error}</span>` : `${r.whois.rootDomain} expires ${r.whois.expiryDate}`}
         ${r.whois.registrar ? `<br><strong>Registrar:</strong> ${r.whois.registrar}` : ''}
       </div>` : '';
     
     const certDetails = cert
-      ? `<div class="cert-summary"><strong>🔐 Cert:</strong> ${cert.subject} (${certHealth.days} days)<br><strong>Issuer:</strong> ${cert.issuer}</div>
+      ? `<div class="cert-summary"><strong>🔐 Cert:</strong> ${cert.subject}<br><strong>Issuer:</strong> ${cert.issuer}</div>
          ${whoisDetails}
          <div class="cert-details" id="details-${idx}" style="display:none">
            <strong>Valid:</strong> ${cert.validFrom} → ${cert.validTo}<br>
@@ -424,24 +431,41 @@ function renderHtml(url, results, includeWhois = false) {
            <strong>HSTS:</strong> ${r.hsts?.enabled ? '✅' : '❌'}<br>
            ${chainHtml ? `<strong>Chain:</strong><div class="chain">${chainHtml}</div>` : ''}
          </div>` : `<em>No HTTPS cert</em>${whoisDetails}`;
-    return `<tr class="row-${overallHealth.class}" data-status="${overallHealth.status}" data-issuer="${cert?.issuer || 'none'}" data-domain="${r.domain}">
+    
+    const domainDaysCell = includeWhois ? `<td class="days-cell" data-days="${whoisHealth?.days ?? -1}">${domainDaysDisplay}</td>` : '';
+    
+    return `<tr class="row-${overallHealth.class}" data-status="${overallHealth.status}" data-issuer="${cert?.issuer || 'none'}" data-domain="${r.domain}" data-cert-days="${certHealth.days ?? -1}" data-domain-days="${whoisHealth?.days ?? -1}">
       <td class="status-cell">${overallHealth.icon}</td>
       <td class="domain-cell"><img src="${favicon}" class="favicon" onerror="this.style.display='none'"><strong class="copyable" onclick="copyText('${r.domain}')">${r.domain}</strong></td>
-      <td class="days-cell">${daysDisplay}</td>
+      <td class="days-cell" data-days="${certHealth.days ?? -1}">${certDaysDisplay}</td>
+      ${domainDaysCell}
       <td class="dns-cell">${dnsHealth.icon} ${r.dns.addresses?.join(', ') || r.dns.error || 'N/A'}<br><small>CNAME: ${r.dns.cname || '-'}</small></td>
-      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}<span class="health-badge ${overallHealth.class}">${overallHealth.message}</span></td>
+      <td class="cert-cell">${certDetails}${cert ? `<button class="expand-btn" onclick="toggleDetails(${idx})">Details ▼</button>` : ''}</td>
     </tr>`;
   }).join('');
 
   const summaryCards = results.map(r => {
-    const health = includeWhois && r.whois ? getOverallHealth(getCertHealth(r.certificate), getWhoisHealth(r.whois)) : getCertHealth(r.certificate);
+    const certHealth = getCertHealth(r.certificate);
+    const whoisHealth = r.whois ? getWhoisHealth(r.whois) : null;
+    const health = includeWhois && whoisHealth ? getOverallHealth(certHealth, whoisHealth) : certHealth;
     return `<div class="summary-card ${health.class}" data-status="${health.status}" data-domain="${r.domain}">
       <img src="https://www.google.com/s2/favicons?domain=${r.domain}&sz=32" onerror="this.style.display='none'">
-      <span class="domain">${r.domain}</span><span class="days ${health.class}">${health.days ?? '—'}</span>
+      <span class="domain">${r.domain}</span>
+      <span class="days-dual">
+        <span class="days ${certHealth.class}" title="Cert">${certHealth.days ?? '—'}</span>
+        ${includeWhois ? `<span class="days ${whoisHealth?.class || 'none'}" title="Domain">${whoisHealth?.days ?? '—'}</span>` : ''}
+      </span>
     </div>`;
   }).join('');
 
-  const timelineData = JSON.stringify(results.filter(r => r.certificate).map(r => ({ domain: r.domain, expiry: new Date(r.certificate.validTo).getTime(), health: getCertHealth(r.certificate).class })).sort((a, b) => a.expiry - b.expiry));
+  // Timeline data for certs
+  const certTimelineData = JSON.stringify(results.filter(r => r.certificate).map(r => ({ domain: r.domain, expiry: new Date(r.certificate.validTo).getTime(), health: getCertHealth(r.certificate).class })).sort((a, b) => a.expiry - b.expiry));
+  
+  // Timeline data for domains (only if WHOIS enabled)
+  const domainTimelineData = includeWhois 
+    ? JSON.stringify(results.filter(r => r.whois && !r.whois.error && r.whois.expiryDate).map(r => ({ domain: r.whois.rootDomain, expiry: new Date(r.whois.expiryDate).getTime(), health: getWhoisHealth(r.whois).class })).filter((v, i, a) => a.findIndex(t => t.domain === v.domain) === i).sort((a, b) => a.expiry - b.expiry))
+    : '[]';
+  
   const exportData = encodeURIComponent(JSON.stringify(results));
 
   return `<!DOCTYPE html>
@@ -473,17 +497,20 @@ function renderHtml(url, results, includeWhois = false) {
     table { border-collapse: collapse; width: 100%; background: var(--card-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
     th, td { border: 1px solid var(--border); padding: 12px; text-align: left; vertical-align: top; }
     th { background: #4a90d9; color: white; position: sticky; top: 0; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { background: #357abd; }
     tr:hover { background: var(--hover); }
     small { color: #888; }
     .status-cell { text-align: center; font-size: 1.2em; width: 40px; }
     .domain-cell { display: flex; align-items: center; gap: 8px; }
     .favicon { width: 16px; height: 16px; }
-    .days-cell { text-align: center; width: 80px; }
-    .days-number { font-size: 1.8em; font-weight: bold; }
+    .days-cell { text-align: center; width: 70px; }
+    .days-number { font-size: 1.5em; font-weight: bold; }
     .days-number.ok { color: #28a745; }
     .days-number.warning { color: #ffc107; }
     .days-number.error { color: #dc3545; }
     .days-number.none { color: #6c757d; }
+    .days-number.unknown { color: #6c757d; }
     .days-label { font-size: 0.8em; color: #888; }
     .health-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; margin-top: 5px; }
     .health-badge.ok { background: #d4edda; color: #155724; }
@@ -497,6 +524,9 @@ function renderHtml(url, results, includeWhois = false) {
     .row-warning { background: rgba(255, 193, 7, 0.1); }
     .row-ok { background: rgba(40, 167, 69, 0.1); }
     .row-none { background: rgba(108, 117, 125, 0.1); }
+    .row-unknown { background: rgba(108, 117, 125, 0.1); }
+    .whois-info { margin: 8px 0; padding: 8px; background: rgba(0,128,255,0.05); border-radius: 4px; border-left: 3px solid #4a90d9; }
+    .whois-info .error { color: #dc3545; }
     .cert-details { margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; font-size: 0.9em; }
     .expand-btn { background: none; border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin: 5px 5px 0 0; color: var(--text); }
     .chain { margin-top: 5px; font-size: 0.85em; }
@@ -511,7 +541,7 @@ function renderHtml(url, results, includeWhois = false) {
     .timeline-dot { position: absolute; width: 12px; height: 12px; border-radius: 50%; top: 24px; transform: translateX(-50%); cursor: pointer; border: 2px solid var(--card-bg); }
     .timeline-dot:hover::after { content: attr(data-domain); position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; z-index: 10; }
     .summary-view { display: none; }
-    .summary-view.active { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+    .summary-view.active { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
     .summary-card { background: var(--card-bg); padding: 12px; border-radius: 4px; border-left: 4px solid; display: flex; align-items: center; gap: 10px; }
     .summary-card.ok { border-color: #28a745; }
     .summary-card.warning { border-color: #ffc107; }
@@ -519,7 +549,8 @@ function renderHtml(url, results, includeWhois = false) {
     .summary-card.none { border-color: #6c757d; }
     .summary-card img { width: 16px; height: 16px; }
     .summary-card .domain { flex: 1; font-weight: 500; word-break: break-all; }
-    .summary-card .days { font-size: 1.2em; font-weight: bold; }
+    .summary-card .days-dual { display: flex; gap: 8px; }
+    .summary-card .days { font-size: 1.1em; font-weight: bold; padding: 2px 6px; border-radius: 3px; }
     .detailed-view { display: block; }
     .detailed-view.hidden { display: none; }
     .toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 12px 20px; border-radius: 4px; opacity: 0; transition: opacity 0.3s; z-index: 100; }
@@ -564,18 +595,36 @@ function renderHtml(url, results, includeWhois = false) {
     <div class="summary-item">⚪ ${summary.none}</div>
   </div>
   
-  <div class="timeline-container" id="timeline-view"><h3>📅 Certificate Expiry Timeline</h3><div class="timeline" id="timeline"></div></div>
+  <div class="timeline-container" id="timeline-view">
+    <h3>🔐 Certificate Expiry Timeline</h3>
+    <div class="timeline" id="cert-timeline"></div>
+    ${includeWhois ? `<h3 style="margin-top: 20px;">🌐 Domain Expiry Timeline</h3><div class="timeline" id="domain-timeline"></div>` : ''}
+  </div>
   <div class="summary-view" id="summary-view">${summaryCards}</div>
   <div class="detailed-view" id="detailed-view">
-    <table><thead><tr><th>✓</th><th>Domain</th><th>Days</th><th>DNS</th><th>Certificate</th></tr></thead><tbody>${rows}</tbody></table>
+    <table>
+      <thead>
+        <tr>
+          <th>✓</th>
+          <th class="sortable" onclick="sortTable('domain')">Domain ⇅</th>
+          <th class="sortable" onclick="sortTable('cert')">🔐 Cert ⇅</th>
+          ${includeWhois ? `<th class="sortable" onclick="sortTable('domain-days')">🌐 Domain ⇅</th>` : ''}
+          <th>DNS</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
   </div>
   
   <div class="toast" id="toast">Copied!</div>
   <script>
-    const timelineData = ${timelineData};
+    const certTimelineData = ${certTimelineData};
+    const domainTimelineData = ${domainTimelineData};
+    const includeWhois = ${includeWhois};
     const exportDataStr = '${exportData}';
-    const statusFilters = { error: true, critical: true, warning: true, ok: true, none: true };
-    let searchQuery = '', issuerFilter = '';
+    const statusFilters = { error: true, critical: true, warning: true, ok: true, none: true, unknown: true };
+    let searchQuery = '', issuerFilter = '', currentSort = { column: null, asc: true };
     
     function toggleDetails(idx) {
       const el = document.getElementById('details-' + idx);
@@ -596,7 +645,7 @@ function renderHtml(url, results, includeWhois = false) {
       document.getElementById('detailed-view').classList.toggle('hidden', view !== 'detailed');
       document.getElementById('summary-view').classList.toggle('active', view === 'summary');
       document.getElementById('timeline-view').classList.toggle('active', view === 'timeline');
-      if (view === 'timeline') renderTimeline();
+      if (view === 'timeline') renderTimelines();
     }
     function filterStatus(status, checked) {
       statusFilters[status] = checked;
@@ -614,16 +663,52 @@ function renderHtml(url, results, includeWhois = false) {
       });
     }
     function exportData(format) { window.location.href = '/export?format=' + format + '&data=' + exportDataStr; }
-    function renderTimeline() {
-      const container = document.getElementById('timeline');
+    
+    function sortTable(column) {
+      const tbody = document.querySelector('#detailed-view tbody');
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      
+      // Toggle sort direction if same column
+      if (currentSort.column === column) {
+        currentSort.asc = !currentSort.asc;
+      } else {
+        currentSort.column = column;
+        currentSort.asc = true;
+      }
+      
+      rows.sort((a, b) => {
+        let aVal, bVal;
+        if (column === 'domain') {
+          aVal = a.dataset.domain || '';
+          bVal = b.dataset.domain || '';
+          return currentSort.asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        } else if (column === 'cert') {
+          aVal = parseInt(a.dataset.certDays) || -999;
+          bVal = parseInt(b.dataset.certDays) || -999;
+        } else if (column === 'domain-days') {
+          aVal = parseInt(a.dataset.domainDays) || -999;
+          bVal = parseInt(b.dataset.domainDays) || -999;
+        }
+        return currentSort.asc ? aVal - bVal : bVal - aVal;
+      });
+      
+      rows.forEach(row => tbody.appendChild(row));
+    }
+    
+    function renderTimeline(containerId, data) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
       container.innerHTML = '';
-      if (timelineData.length === 0) return;
+      if (data.length === 0) {
+        container.innerHTML = '<em style="color: #888;">No data available</em>';
+        return;
+      }
       const now = Date.now();
-      const maxDate = Math.max(...timelineData.map(d => d.expiry), now + 365*24*60*60*1000);
+      const maxDate = Math.max(...data.map(d => d.expiry), now + 365*24*60*60*1000);
       const range = maxDate - now;
       const nowMarker = document.createElement('div'); nowMarker.className = 'timeline-marker'; nowMarker.style.left = '0%'; container.appendChild(nowMarker);
       const nowLabel = document.createElement('div'); nowLabel.className = 'timeline-label'; nowLabel.style.left = '0%'; nowLabel.textContent = 'Today'; container.appendChild(nowLabel);
-      timelineData.forEach(d => {
+      data.forEach(d => {
         const pos = ((d.expiry - now) / range) * 100;
         if (pos >= 0 && pos <= 100) {
           const dot = document.createElement('div');
@@ -635,6 +720,13 @@ function renderHtml(url, results, includeWhois = false) {
         }
       });
       const endLabel = document.createElement('div'); endLabel.className = 'timeline-label'; endLabel.style.left = '100%'; endLabel.textContent = new Date(maxDate).toLocaleDateString(); container.appendChild(endLabel);
+    }
+    
+    function renderTimelines() {
+      renderTimeline('cert-timeline', certTimelineData);
+      if (includeWhois) {
+        renderTimeline('domain-timeline', domainTimelineData);
+      }
     }
   </script>
 </body>
