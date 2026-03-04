@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: node18-linux-x64
+            output: cert-inspector-linux
+          - os: macos-latest
+            target: node18-macos-x64
+            output: cert-inspector-macos
+          - os: windows-latest
+            target: node18-win-x64
+            output: cert-inspector-win.exe
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+      
+      - name: Test source runs
+        run: |
+          node server.js &
+          SERVER_PID=$!
+          # Wait for server to be ready (up to 30 seconds)
+          for i in {1..30}; do
+            if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            sleep 1
+          done
+          # Test homepage loads
+          curl -f http://localhost:3000 || exit 1
+          # Test actual inspection (exercises whois, psl, playwright modules)
+          curl -sf "http://localhost:3000/inspect?url=https://example.com" | head -c 500 || exit 1
+          kill $SERVER_PID
+        shell: bash
+        env:
+          NO_OPEN: 1
+      
+      - name: Build executable
+        run: npx pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.output }}
+      
+      - name: Smoke test executable (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x dist/${{ matrix.output }}
+          dist/${{ matrix.output }} &
+          SERVER_PID=$!
+          # Wait for server to be ready (up to 60 seconds for binary)
+          for i in {1..60}; do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Process crashed!"
+              exit 1
+            fi
+            if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            sleep 1
+          done
+          # Test homepage loads
+          curl -f http://localhost:3000 || exit 1
+          # Test actual inspection (exercises whois, psl, playwright modules)
+          curl -sf "http://localhost:3000/inspect?url=https://example.com" | head -c 500 || exit 1
+          kill $SERVER_PID
+        env:
+          NO_OPEN: 1
+      
+      - name: Smoke test executable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist/${{ matrix.output }}" -PassThru -NoNewWindow
+          # Wait for server to be ready (up to 60 seconds)
+          $ready = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            if ($proc.HasExited) {
+              Write-Error "Process crashed with exit code $($proc.ExitCode)"
+              exit 1
+            }
+            try {
+              Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing -ErrorAction Stop | Out-Null
+              Write-Host "Server ready"
+              $ready = $true
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $ready) {
+            Write-Error "Server failed to start within 60 seconds"
+            exit 1
+          }
+          # Test homepage loads
+          Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing
+          # Test actual inspection (exercises whois, psl, playwright modules)
+          $response = Invoke-WebRequest -Uri "http://localhost:3000/inspect?url=https://example.com" -UseBasicParsing
+          if ($response.StatusCode -ne 200) { exit 1 }
+          Stop-Process -Id $proc.Id -Force
+        env:
+          NO_OPEN: 1
