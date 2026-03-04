@@ -18,7 +18,9 @@
       "server.js",
       "node_modules/playwright-core/lib/server/registry/oopDownloadBrowserMain.js"
     ],
-    "assets": [],
+    "assets": [
+      "node_modules/whois/servers.json"
+    ],
     "outputPath": "dist"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
     "open": "^11.0.0",
     "playwright": "1.52.0",
     "psl": "^1.15.0",
+    "whois": "2.14.2",
     "whois-json": "^2.0.4"
   },
   "devDependencies": {
